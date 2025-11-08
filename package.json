@@ -1,0 +1,46 @@
+{
+  "name": "shop-elec-be",
+  "version": "1.0.0",
+  "description": "Backend API for Shop Electronics - E-commerce platform",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "start:prod": "NODE_ENV=production node server.js",
+    "dev": "nodemon server.js",
+    "dev:env": "node -r dotenv/config server.js dotenv_config_path=.env.development",
+    "prod:env": "node -r dotenv/config server.js dotenv_config_path=.env.production",
+    "test": "node test.js",
+    "test:watch": "nodemon test.js",
+    "prisma:seed": "node prisma/seed.js",
+    "prisma:studio": "npx prisma studio"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "keywords": [
+    "ecommerce",
+    "shop",
+    "api",
+    "express",
+    "rest-api"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "bcryptjs": "^3.0.3",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "prisma": "^6.19.0",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}
