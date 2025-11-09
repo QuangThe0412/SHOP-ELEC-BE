@@ -9,27 +9,48 @@ const swaggerSpec = require('./src/config/swagger');
 const prisma = require('./src/lib/prisma');
 
 // Import middleware
-const { errorHandler, notFound, requestLogger } = require('./middleware/errorHandler');
+const { errorHandler, notFound, requestLogger } = require('./src/middleware/errorHandler');
 
 // Import routes
-const authRoutes = require('./routes/authRoutes');
-const productRoutes = require('./routes/productRoutes');
-const cartRoutes = require('./routes/cartRoutes');
-const orderRoutes = require('./routes/orderRoutes');
-const categoryRoutes = require('./routes/categoryRoutes');
-const reviewRoutes = require('./routes/reviewRoutes');
-const adminRoutes = require('./routes/adminRoutes');
+const authRoutes = require('./src/routes/authRoutes');
+const productRoutes = require('./src/routes/productRoutes');
+const cartRoutes = require('./src/routes/cartRoutes');
+const orderRoutes = require('./src/routes/orderRoutes');
+const categoryRoutes = require('./src/routes/categoryRoutes');
+const reviewRoutes = require('./src/routes/reviewRoutes');
+const adminRoutes = require('./src/routes/adminRoutes');
+const bannerRoutes = require('./src/routes/bannerRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Security middleware
-app.use(helmet());
+// Security middleware - Allow CORS for development
+const isProduction = process.env.NODE_ENV === 'production';
+
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: !isProduction,
+  crossOriginOpenerPolicy: !isProduction,
+  crossOriginResourcePolicy: !isProduction ? { policy: 'cross-origin' } : { policy: 'same-as-me' },
+  referrerPolicy: !isProduction ? { policy: 'no-referrer' } : { policy: 'strict-origin-when-cross-origin' }
+}));
 
 // CORS configuration
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
-  credentials: true
+  origin: function (origin, callback) {
+    const corsUrl = process.env.CORS_URL || 'http://localhost:3000';
+    // Allow requests from CORS_URL or if no origin (for mobile apps, curl, etc)
+    if (!origin || origin === corsUrl || isProduction === false) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Allow all in development
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['X-Total-Count', 'X-Page-Count'],
+  maxAge: 86400
 }));
 
 // Compression
@@ -100,6 +121,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/banners', bannerRoutes);
 
 // 404 handler
 app.use(notFound);
@@ -118,7 +140,7 @@ app.listen(PORT, () => {
 ║   Environment: ${process.env.NODE_ENV || 'development'}                              ║
 ║   Swagger Docs: ${enableSwagger ? `http://localhost:${PORT}/api-docs` : 'Disabled'}      ║
 ║                                                        ║
-║   Available Endpoints:                                 ║
+   ║   Available Endpoints:                                 ║
 ║   • Auth:       /api/auth                             ║
 ║   • Products:   /api/products                         ║
 ║   • Cart:       /api/cart                             ║
@@ -126,6 +148,7 @@ app.listen(PORT, () => {
 ║   • Categories: /api/categories                       ║
 ║   • Reviews:    /api/reviews                          ║
 ║   • Admin:      /api/admin                            ║
+║   • Banners:    /api/banners                          ║
 ║                                                        ║
 ║   Database:     Connected to SQL Server               ║
 ║   Default Accounts:                                    ║

@@ -1,188 +1,405 @@
-const { orders, products, users } = require('../data/mockData');
+const prisma = require('../lib/prisma');
 const { successResponse, errorResponse } = require('../utils/response');
 
 /**
- * Get admin dashboard statistics
- * GET /api/admin/stats
+ * Get admin dashboard
+ * GET /api/admin/dashboard
  */
-const getDashboardStats = (req, res) => {
+const getDashboard = async (req, res) => {
   try {
-    // Calculate total revenue
-    const totalRevenue = orders
-      .filter(o => o.paymentStatus === 'paid')
-      .reduce((sum, o) => sum + o.total, 0);
+    // Get statistics
+    const totalUsers = await prisma.user.count();
+    const totalProducts = await prisma.product.count();
+    const totalOrders = await prisma.order.count();
+    const totalRevenue = await prisma.order.aggregate({
+      _sum: { total: true },
+      where: { status: 'delivered' }
+    });
 
-    // Count orders by status
-    const orderStats = {
-      total: orders.length,
-      pending: orders.filter(o => o.status === 'pending').length,
-      confirmed: orders.filter(o => o.status === 'confirmed').length,
-      shipping: orders.filter(o => o.status === 'shipping').length,
-      delivered: orders.filter(o => o.status === 'delivered').length,
-      cancelled: orders.filter(o => o.status === 'cancelled').length
-    };
+    const recentOrders = await prisma.order.findMany({
+      take: 10,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: { name: true }
+        },
+        items: true
+      }
+    });
 
-    // Product statistics
-    const productStats = {
-      total: products.length,
-      inStock: products.filter(p => p.stock > 0).length,
-      outOfStock: products.filter(p => p.stock === 0).length,
-      lowStock: products.filter(p => p.stock > 0 && p.stock < 10).length
-    };
-
-    // User statistics
-    const userStats = {
-      total: users.length,
-      customers: users.filter(u => u.role === 'customer').length,
-      admins: users.filter(u => u.role === 'admin').length
-    };
+    const topProducts = await prisma.product.findMany({
+      orderBy: { reviewCount: 'desc' },
+      take: 5,
+      select: {
+        id: true,
+        name: true,
+        price: true,
+        rating: true,
+        reviewCount: true,
+        stock: true,
+        image: true
+      }
+    });
 
     return successResponse(res, {
-      revenue: {
-        total: totalRevenue,
-        thisMonth: 0 // Calculate based on date filter
-      },
-      orders: orderStats,
-      products: productStats,
-      users: userStats
-    });
-
-  } catch (error) {
-    console.error('Get dashboard stats error:', error);
-    return errorResponse(res, 'Failed to get dashboard statistics', 500);
-  }
-};
-
-/**
- * Get recent orders
- * GET /api/admin/orders/recent
- */
-const getRecentOrders = (req, res) => {
-  try {
-    const { limit = 10 } = req.query;
-
-    const recentOrders = [...orders]
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, Number(limit));
-
-    return successResponse(res, { orders: recentOrders });
-
-  } catch (error) {
-    console.error('Get recent orders error:', error);
-    return errorResponse(res, 'Failed to get recent orders', 500);
-  }
-};
-
-/**
- * Get top selling products
- * GET /api/admin/products/top-selling
- */
-const getTopSellingProducts = (req, res) => {
-  try {
-    const { limit = 10 } = req.query;
-
-    // Calculate product sales
-    const productSales = {};
-    
-    orders.forEach(order => {
-      order.items.forEach(item => {
-        if (!productSales[item.productId]) {
-          productSales[item.productId] = {
-            productId: item.productId,
-            name: item.name,
-            totalSold: 0,
-            revenue: 0
-          };
-        }
-        productSales[item.productId].totalSold += item.quantity;
-        productSales[item.productId].revenue += item.price * item.quantity;
-      });
-    });
-
-    // Convert to array and sort
-    const topProducts = Object.values(productSales)
-      .sort((a, b) => b.totalSold - a.totalSold)
-      .slice(0, Number(limit));
-
-    return successResponse(res, { products: topProducts });
-
-  } catch (error) {
-    console.error('Get top selling products error:', error);
-    return errorResponse(res, 'Failed to get top selling products', 500);
-  }
-};
-
-/**
- * Get recent users
- * GET /api/admin/users/recent
- */
-const getRecentUsers = (req, res) => {
-  try {
-    const { limit = 10 } = req.query;
-
-    const recentUsers = [...users]
-      .filter(u => u.role === 'customer')
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, Number(limit))
-      .map(u => ({
-        id: u.id,
-        name: u.name,
-        email: u.email,
-        createdAt: u.createdAt
-      }));
-
-    return successResponse(res, { users: recentUsers });
-
-  } catch (error) {
-    console.error('Get recent users error:', error);
-    return errorResponse(res, 'Failed to get recent users', 500);
-  }
-};
-
-/**
- * Get revenue chart data
- * GET /api/admin/revenue/chart
- */
-const getRevenueChart = (req, res) => {
-  try {
-    const { period = 'week' } = req.query; // week, month, year
-
-    // Generate mock revenue data for the chart
-    const chartData = [];
-    const now = new Date();
-
-    if (period === 'week') {
-      for (let i = 6; i >= 0; i--) {
-        const date = new Date(now);
-        date.setDate(date.getDate() - i);
-        
-        const dayOrders = orders.filter(o => {
-          const orderDate = new Date(o.createdAt);
-          return orderDate.toDateString() === date.toDateString();
-        });
-
-        const revenue = dayOrders.reduce((sum, o) => sum + o.total, 0);
-
-        chartData.push({
-          date: date.toISOString().split('T')[0],
-          revenue,
-          orders: dayOrders.length
-        });
+      dashboard: {
+        statistics: {
+          totalUsers,
+          totalProducts,
+          totalOrders,
+          totalRevenue: totalRevenue._sum.total || 0
+        },
+        recentOrders,
+        topProducts
       }
+    });
+
+  } catch (error) {
+    console.error('Get dashboard error:', error);
+    return errorResponse(res, 'Failed to get dashboard', 500);
+  }
+};
+
+/**
+ * Get all users
+ * GET /api/admin/users
+ */
+const getUsers = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, role, search } = req.query;
+
+    const where = {};
+    if (role) {
+      where.role = role;
+    }
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } }
+      ];
     }
 
-    return successResponse(res, { chartData, period });
+    const users = await prisma.user.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        createdAt: true,
+        _count: {
+          select: { orders: true, reviews: true }
+        }
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: parseInt(limit)
+    });
+
+    const total = await prisma.user.count({ where });
+
+    return successResponse(res, {
+      users,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
 
   } catch (error) {
-    console.error('Get revenue chart error:', error);
-    return errorResponse(res, 'Failed to get revenue chart', 500);
+    console.error('Get users error:', error);
+    return errorResponse(res, 'Failed to get users', 500);
+  }
+};
+
+/**
+ * Get all orders
+ * GET /api/admin/orders
+ */
+const getOrders = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, status } = req.query;
+
+    const where = {};
+    if (status) {
+      where.status = status;
+    }
+
+    const orders = await prisma.order.findMany({
+      where,
+      include: {
+        user: {
+          select: { name: true, email: true }
+        },
+        items: true,
+        timeline: true
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: parseInt(limit)
+    });
+
+    const total = await prisma.order.count({ where });
+
+    return successResponse(res, {
+      orders,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get orders error:', error);
+    return errorResponse(res, 'Failed to get orders', 500);
+  }
+};
+
+/**
+ * Update order status
+ * PUT /api/admin/orders/:orderId/status
+ */
+const updateOrderStatus = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status, description } = req.body;
+
+    const validStatuses = ['pending', 'confirmed', 'shipping', 'delivered', 'cancelled'];
+    if (!status || !validStatuses.includes(status)) {
+      return errorResponse(res, 'Invalid status', 400, 'INVALID_STATUS');
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId }
+    });
+
+    if (!order) {
+      return errorResponse(res, 'Order not found', 404, 'ORDER_NOT_FOUND');
+    }
+
+    const updatedOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: { status },
+      include: {
+        items: true,
+        timeline: true
+      }
+    });
+
+    // Add timeline entry
+    await prisma.orderTimeline.create({
+      data: {
+        orderId,
+        status,
+        description: description || `Order status updated to ${status}`
+      }
+    });
+
+    return successResponse(res, { order: updatedOrder }, 'Order status updated successfully');
+
+  } catch (error) {
+    console.error('Update order error:', error);
+    return errorResponse(res, 'Failed to update order', 500);
+  }
+};
+
+/**
+ * Get products
+ * GET /api/admin/products
+ */
+const getProducts = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, category, search } = req.query;
+
+    const where = {};
+    if (category) {
+      where.categoryId = category;
+    }
+    if (search) {
+      where.name = { contains: search, mode: 'insensitive' };
+    }
+
+    const products = await prisma.product.findMany({
+      where,
+      include: {
+        category: {
+          select: { name: true }
+        },
+        _count: {
+          select: { reviews: true }
+        }
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: parseInt(limit)
+    });
+
+    const total = await prisma.product.count({ where });
+
+    return successResponse(res, {
+      products,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get products error:', error);
+    return errorResponse(res, 'Failed to get products', 500);
+  }
+};
+
+/**
+ * Update product
+ * PUT /api/admin/products/:productId
+ */
+const updateProduct = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { name, description, price, originalPrice, stock, categoryId, subCategoryId } = req.body;
+
+    const product = await prisma.product.findUnique({
+      where: { id: productId }
+    });
+
+    if (!product) {
+      return errorResponse(res, 'Product not found', 404, 'PRODUCT_NOT_FOUND');
+    }
+
+    const updatedProduct = await prisma.product.update({
+      where: { id: productId },
+      data: {
+        name: name || product.name,
+        description: description || product.description,
+        price: price || product.price,
+        originalPrice: originalPrice || product.originalPrice,
+        stock: stock !== undefined ? stock : product.stock,
+        categoryId: categoryId || product.categoryId,
+        subCategoryId: subCategoryId || product.subCategoryId
+      },
+      include: {
+        category: true,
+        images: true
+      }
+    });
+
+    return successResponse(res, { product: updatedProduct }, 'Product updated successfully');
+
+  } catch (error) {
+    console.error('Update product error:', error);
+    return errorResponse(res, 'Failed to update product', 500);
+  }
+};
+
+/**
+ * Delete product
+ * DELETE /api/admin/products/:productId
+ */
+const deleteProduct = async (req, res) => {
+  try {
+    const { productId } = req.params;
+
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      include: {
+        _count: {
+          select: { reviews: true, orderItems: true }
+        }
+      }
+    });
+
+    if (!product) {
+      return errorResponse(res, 'Product not found', 404, 'PRODUCT_NOT_FOUND');
+    }
+
+    if (product._count.orderItems > 0) {
+      return errorResponse(res, 'Cannot delete product with orders', 400, 'PRODUCT_HAS_ORDERS');
+    }
+
+    // Delete associated images and reviews
+    await prisma.productImage.deleteMany({
+      where: { productId }
+    });
+
+    await prisma.review.deleteMany({
+      where: { productId }
+    });
+
+    await prisma.product.delete({
+      where: { id: productId }
+    });
+
+    return successResponse(res, null, 'Product deleted successfully');
+
+  } catch (error) {
+    console.error('Delete product error:', error);
+    return errorResponse(res, 'Failed to delete product', 500);
+  }
+};
+
+/**
+ * Get sales analytics
+ * GET /api/admin/analytics/sales
+ */
+const getSalesAnalytics = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    const where = {
+      status: 'delivered'
+    };
+
+    if (startDate) {
+      where.createdAt = { gte: new Date(startDate) };
+    }
+    if (endDate) {
+      if (!where.createdAt) {
+        where.createdAt = {};
+      }
+      where.createdAt.lte = new Date(endDate);
+    }
+
+    const orders = await prisma.order.findMany({
+      where,
+      select: {
+        total: true,
+        createdAt: true,
+        status: true
+      }
+    });
+
+    const totalSales = orders.reduce((sum, order) => sum + order.total, 0);
+    const totalOrders = orders.length;
+    const averageOrderValue = totalOrders > 0 ? totalSales / totalOrders : 0;
+
+    return successResponse(res, {
+      analytics: {
+        totalSales,
+        totalOrders,
+        averageOrderValue: Math.round(averageOrderValue * 100) / 100
+      }
+    });
+
+  } catch (error) {
+    console.error('Get sales analytics error:', error);
+    return errorResponse(res, 'Failed to get analytics', 500);
   }
 };
 
 module.exports = {
-  getDashboardStats,
-  getRecentOrders,
-  getTopSellingProducts,
-  getRecentUsers,
-  getRevenueChart
+  getDashboard,
+  getUsers,
+  getOrders,
+  updateOrderStatus,
+  getProducts,
+  updateProduct,
+  deleteProduct,
+  getSalesAnalytics
 };

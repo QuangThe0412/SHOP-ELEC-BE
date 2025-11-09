@@ -1,4 +1,4 @@
-const { orders, orderCounter, products, carts } = require('../data/mockData');
+const prisma = require('../lib/prisma');
 const { successResponse, errorResponse } = require('../utils/response');
 const { validateRequiredFields } = require('../utils/validation');
 
@@ -6,12 +6,11 @@ const { validateRequiredFields } = require('../utils/validation');
  * Create new order
  * POST /api/orders
  */
-const createOrder = (req, res) => {
+const createOrder = async (req, res) => {
   try {
     const userId = req.user.id;
     const { items, customerInfo, paymentMethod } = req.body;
 
-    // Validate required fields
     const customerFields = ['name', 'email', 'phone', 'address', 'city'];
     const missing = validateRequiredFields(customerInfo || {}, customerFields);
     
@@ -27,12 +26,13 @@ const createOrder = (req, res) => {
       return errorResponse(res, 'Invalid payment method', 400, 'INVALID_PAYMENT_METHOD');
     }
 
-    // Validate items and calculate total
     let subtotal = 0;
-    const orderItems = [];
+    const orderItemsData = [];
 
     for (const item of items) {
-      const product = products.find(p => p.id === item.productId);
+      const product = await prisma.product.findUnique({
+        where: { id: item.productId }
+      });
       
       if (!product) {
         return errorResponse(res, `Product ${item.productId} not found`, 404, 'PRODUCT_NOT_FOUND');
@@ -45,54 +45,60 @@ const createOrder = (req, res) => {
       const itemTotal = product.price * item.quantity;
       subtotal += itemTotal;
 
-      orderItems.push({
+      orderItemsData.push({
         productId: product.id,
         name: product.name,
         price: product.price,
         quantity: item.quantity,
         image: product.image
       });
-
-      // Update stock (in real app, use transactions)
-      product.stock -= item.quantity;
     }
 
     const shippingFee = subtotal > 500000 ? 0 : 30000;
     const total = subtotal + shippingFee;
 
-    // Generate order code
-    const orderCode = `ORD${String(orderCounter).padStart(6, '0')}`;
-    orderCounter++;
-
-    // Create order
-    const newOrder = {
-      id: `order-${Date.now()}`,
-      userId,
-      orderCode,
-      items: orderItems,
-      subtotal,
-      shippingFee,
-      total,
-      status: 'pending',
-      paymentMethod,
-      paymentStatus: paymentMethod === 'cod' ? 'pending' : 'pending',
-      customerInfo,
-      timeline: [
-        {
-          status: 'pending',
-          timestamp: new Date().toISOString(),
-          description: 'Đơn hàng đã được tạo'
+    // Create order with items and timeline
+    const newOrder = await prisma.order.create({
+      data: {
+        userId,
+        orderCode: `ORD-${Date.now()}`,
+        subtotal,
+        shippingFee,
+        total,
+        status: 'pending',
+        paymentMethod,
+        paymentStatus: 'pending',
+        customerName: customerInfo.name,
+        customerEmail: customerInfo.email,
+        customerPhone: customerInfo.phone,
+        address: customerInfo.address,
+        city: customerInfo.city,
+        district: customerInfo.district || null,
+        items: {
+          create: orderItemsData.map(item => ({
+            ...item,
+            subtotal: item.price * item.quantity
+          }))
+        },
+        timeline: {
+          create: [
+            {
+              status: 'pending',
+              description: 'Đơn hàng đã được tạo'
+            }
+          ]
         }
-      ],
-      createdAt: new Date().toISOString()
-    };
-
-    orders.push(newOrder);
+      },
+      include: {
+        items: true,
+        timeline: true
+      }
+    });
 
     // Clear user's cart
-    if (carts[userId]) {
-      carts[userId] = [];
-    }
+    await prisma.cartItem.deleteMany({
+      where: { userId }
+    });
 
     return successResponse(res, { order: newOrder }, 'Order created successfully', 201);
 
@@ -106,15 +112,38 @@ const createOrder = (req, res) => {
  * Get user's orders
  * GET /api/orders
  */
-const getUserOrders = (req, res) => {
+const getOrders = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userOrders = orders.filter(o => o.userId === userId);
+    const { status, page = 1, limit = 10 } = req.query;
 
-    // Sort by creation date (newest first)
-    userOrders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const where = { userId };
+    if (status) {
+      where.status = status;
+    }
 
-    return successResponse(res, { orders: userOrders });
+    const orders = await prisma.order.findMany({
+      where,
+      include: {
+        items: true,
+        timeline: true
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: parseInt(limit)
+    });
+
+    const total = await prisma.order.count({ where });
+
+    return successResponse(res, {
+      orders,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
 
   } catch (error) {
     console.error('Get orders error:', error);
@@ -126,21 +155,28 @@ const getUserOrders = (req, res) => {
  * Get order by ID
  * GET /api/orders/:orderId
  */
-const getOrderById = (req, res) => {
+const getOrderById = async (req, res) => {
   try {
-    const { orderId } = req.params;
     const userId = req.user.id;
-    const userRole = req.user.role;
+    const { orderId } = req.params;
 
-    const order = orders.find(o => o.id === orderId);
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        items: true,
+        timeline: true,
+        user: {
+          select: { id: true, email: true, name: true }
+        }
+      }
+    });
 
     if (!order) {
       return errorResponse(res, 'Order not found', 404, 'ORDER_NOT_FOUND');
     }
 
-    // Check authorization (user can only see their own orders, admin can see all)
-    if (order.userId !== userId && userRole !== 'admin') {
-      return errorResponse(res, 'Access denied', 403, 'FORBIDDEN');
+    if (order.userId !== userId) {
+      return errorResponse(res, 'Unauthorized', 403, 'UNAUTHORIZED');
     }
 
     return successResponse(res, { order });
@@ -152,39 +188,10 @@ const getOrderById = (req, res) => {
 };
 
 /**
- * Track order by order code (public)
- * GET /api/orders/track/:orderCode
- */
-const trackOrder = (req, res) => {
-  try {
-    const { orderCode } = req.params;
-    const order = orders.find(o => o.orderCode === orderCode);
-
-    if (!order) {
-      return errorResponse(res, 'Order not found', 404, 'ORDER_NOT_FOUND');
-    }
-
-    // Return limited info for tracking
-    const trackingInfo = {
-      orderCode: order.orderCode,
-      status: order.status,
-      timeline: order.timeline,
-      createdAt: order.createdAt
-    };
-
-    return successResponse(res, { tracking: trackingInfo });
-
-  } catch (error) {
-    console.error('Track order error:', error);
-    return errorResponse(res, 'Failed to track order', 500);
-  }
-};
-
-/**
- * Update order status (Admin only)
+ * Update order status
  * PUT /api/orders/:orderId/status
  */
-const updateOrderStatus = (req, res) => {
+const updateOrderStatus = async (req, res) => {
   try {
     const { orderId } = req.params;
     const { status, description } = req.body;
@@ -194,80 +201,94 @@ const updateOrderStatus = (req, res) => {
       return errorResponse(res, 'Invalid status', 400, 'INVALID_STATUS');
     }
 
-    const orderIndex = orders.findIndex(o => o.id === orderId);
-    if (orderIndex === -1) {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId }
+    });
+
+    if (!order) {
       return errorResponse(res, 'Order not found', 404, 'ORDER_NOT_FOUND');
     }
 
-    // Update status
-    orders[orderIndex].status = status;
-    
-    // Add timeline entry
-    orders[orderIndex].timeline.push({
-      status,
-      timestamp: new Date().toISOString(),
-      description: description || `Đơn hàng ${status}`
+    const updatedOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: { status },
+      include: {
+        items: true,
+        timeline: true
+      }
     });
 
-    // Update payment status if delivered
-    if (status === 'delivered' && orders[orderIndex].paymentMethod === 'cod') {
-      orders[orderIndex].paymentStatus = 'paid';
-    }
+    // Add timeline entry
+    await prisma.orderTimeline.create({
+      data: {
+        orderId,
+        status,
+        description: description || `Order status updated to ${status}`
+      }
+    });
 
-    return successResponse(res, { order: orders[orderIndex] }, 'Order status updated successfully');
+    return successResponse(res, { order: updatedOrder }, 'Order status updated successfully');
 
   } catch (error) {
-    console.error('Update order status error:', error);
-    return errorResponse(res, 'Failed to update order status', 500);
+    console.error('Update order error:', error);
+    return errorResponse(res, 'Failed to update order', 500);
   }
 };
 
 /**
- * Get all orders (Admin only)
- * GET /api/orders/admin/all
+ * Cancel order
+ * DELETE /api/orders/:orderId
  */
-const getAllOrders = (req, res) => {
+const cancelOrder = async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
+    const userId = req.user.id;
+    const { orderId } = req.params;
 
-    let filteredOrders = [...orders];
+    const order = await prisma.order.findUnique({
+      where: { id: orderId }
+    });
 
-    // Filter by status
-    if (status) {
-      filteredOrders = filteredOrders.filter(o => o.status === status);
+    if (!order) {
+      return errorResponse(res, 'Order not found', 404, 'ORDER_NOT_FOUND');
     }
 
-    // Sort by creation date (newest first)
-    filteredOrders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    if (order.userId !== userId) {
+      return errorResponse(res, 'Unauthorized', 403, 'UNAUTHORIZED');
+    }
 
-    // Pagination
-    const pageNum = Number(page);
-    const limitNum = Number(limit);
-    const startIndex = (pageNum - 1) * limitNum;
-    const endIndex = startIndex + limitNum;
-    const paginatedOrders = filteredOrders.slice(startIndex, endIndex);
+    if (order.status !== 'pending') {
+      return errorResponse(res, 'Can only cancel pending orders', 400, 'CANNOT_CANCEL_ORDER');
+    }
 
-    return successResponse(res, {
-      orders: paginatedOrders,
-      pagination: {
-        currentPage: pageNum,
-        totalPages: Math.ceil(filteredOrders.length / limitNum),
-        totalOrders: filteredOrders.length,
-        hasMore: endIndex < filteredOrders.length
+    const cancelledOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'cancelled' },
+      include: {
+        items: true,
+        timeline: true
       }
     });
 
+    await prisma.orderTimeline.create({
+      data: {
+        orderId,
+        status: 'cancelled',
+        description: 'Order has been cancelled'
+      }
+    });
+
+    return successResponse(res, { order: cancelledOrder }, 'Order cancelled successfully');
+
   } catch (error) {
-    console.error('Get all orders error:', error);
-    return errorResponse(res, 'Failed to get orders', 500);
+    console.error('Cancel order error:', error);
+    return errorResponse(res, 'Failed to cancel order', 500);
   }
 };
 
 module.exports = {
   createOrder,
-  getUserOrders,
+  getOrders,
   getOrderById,
-  trackOrder,
   updateOrderStatus,
-  getAllOrders
+  cancelOrder
 };

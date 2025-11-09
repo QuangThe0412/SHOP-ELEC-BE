@@ -3,8 +3,8 @@ const router = express.Router();
 const {
   register,
   login,
-  getCurrentUser,
-  refreshAccessToken,
+  getProfile,
+  refreshToken,
   logout
 } = require('../controllers/authController');
 const { authenticate } = require('../middleware/auth');
@@ -118,7 +118,7 @@ router.post('/login', login);
  *       401:
  *         description: Refresh token không hợp lệ
  */
-router.post('/refresh-token', refreshAccessToken);
+router.post('/refresh-token', refreshToken);
 
 /**
  * @swagger
@@ -166,6 +166,6 @@ router.post('/logout', logout);
  *       401:
  *         description: Chưa đăng nhập
  */
-router.get('/me', authenticate, getCurrentUser);
+router.get('/me', authenticate, getProfile);
 
 module.exports = router;

@@ -18,7 +18,7 @@ const options = {
     },
     servers: [
       {
-        url: 'http://localhost:5000',
+        url: 'http://localhost:3000',
         description: 'Development server'
       },
       {
@@ -152,11 +152,12 @@ const options = {
     tags: [
       { name: 'Auth', description: 'Authentication endpoints' },
       { name: 'Products', description: 'Product management' },
-      { name: 'Cart', description: 'Shopping cart' },
-      { name: 'Orders', description: 'Order management' },
-      { name: 'Categories', description: 'Category management' },
-      { name: 'Reviews', description: 'Product reviews' },
-      { name: 'Admin', description: 'Admin dashboard' }
+      { name: 'Shopping Cart', description: 'Shopping cart operations' },
+      { name: 'Order Management', description: 'Order management' },
+      { name: 'Category Management', description: 'Category management' },
+      { name: 'Product Reviews', description: 'Product reviews' },
+      { name: 'Admin Dashboard', description: 'Admin dashboard' },
+      { name: 'Banners', description: 'Banner management' }
     ]
   },
   apis: ['./src/routes/*.js'] // Path to API routes

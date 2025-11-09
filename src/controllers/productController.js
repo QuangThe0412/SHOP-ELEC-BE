@@ -1,4 +1,4 @@
-const { products } = require('../data/mockData');
+const prisma = require('../lib/prisma');
 const { successResponse, errorResponse } = require('../utils/response');
 const { validateRequiredFields } = require('../utils/validation');
 
@@ -6,11 +6,11 @@ const { validateRequiredFields } = require('../utils/validation');
  * Get all products with filters
  * GET /api/products
  */
-const getAllProducts = (req, res) => {
+const getAllProducts = async (req, res) => {
   try {
     const {
-      category,
-      subCategory,
+      categoryId,
+      subCategoryId,
       minPrice,
       maxPrice,
       rating,
@@ -20,75 +20,90 @@ const getAllProducts = (req, res) => {
       limit = 20
     } = req.query;
 
-    let filteredProducts = [...products];
+    // Build where clause
+    const where = {};
 
-    // Filter by category
-    if (category) {
-      filteredProducts = filteredProducts.filter(p => p.category === category);
+    if (categoryId) {
+      where.categoryId = categoryId;
     }
 
-    // Filter by subcategory
-    if (subCategory) {
-      filteredProducts = filteredProducts.filter(p => p.subCategory === subCategory);
+    if (subCategoryId) {
+      where.subCategoryId = subCategoryId;
     }
 
-    // Filter by price range
     if (minPrice) {
-      filteredProducts = filteredProducts.filter(p => p.price >= Number(minPrice));
+      where.price = { ...where.price, gte: Number(minPrice) };
     }
+
     if (maxPrice) {
-      filteredProducts = filteredProducts.filter(p => p.price <= Number(maxPrice));
+      where.price = { ...where.price, lte: Number(maxPrice) };
     }
 
-    // Filter by rating
     if (rating) {
-      filteredProducts = filteredProducts.filter(p => p.rating >= Number(rating));
+      where.rating = { gte: Number(rating) };
     }
 
-    // Search by name or description
     if (search) {
-      const searchLower = search.toLowerCase();
-      filteredProducts = filteredProducts.filter(p =>
-        p.name.toLowerCase().includes(searchLower) ||
-        p.description.toLowerCase().includes(searchLower)
-      );
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+        { tags: { hasSome: [search] } }
+      ];
     }
 
-    // Sort products
+    // Build orderBy clause
+    let orderBy = { createdAt: 'desc' };
     if (sort) {
       switch (sort) {
         case 'price-asc':
-          filteredProducts.sort((a, b) => a.price - b.price);
+          orderBy = { price: 'asc' };
           break;
         case 'price-desc':
-          filteredProducts.sort((a, b) => b.price - a.price);
+          orderBy = { price: 'desc' };
           break;
         case 'rating':
-          filteredProducts.sort((a, b) => b.rating - a.rating);
+          orderBy = { rating: 'desc' };
           break;
         case 'newest':
-          filteredProducts.sort((a, b) => b.id.localeCompare(a.id));
+          orderBy = { createdAt: 'desc' };
           break;
         case 'best-seller':
-          filteredProducts.sort((a, b) => b.reviewCount - a.reviewCount);
+          orderBy = { reviewCount: 'desc' };
           break;
       }
     }
 
-    // Pagination
-    const pageNum = Number(page);
-    const limitNum = Number(limit);
-    const startIndex = (pageNum - 1) * limitNum;
-    const endIndex = startIndex + limitNum;
-    const paginatedProducts = filteredProducts.slice(startIndex, endIndex);
+    // Get pagination values
+    const pageNum = Math.max(1, Number(page));
+    const limitNum = Math.max(1, Math.min(100, Number(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    // Fetch products
+    const [products, totalCount] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        orderBy,
+        skip,
+        take: limitNum,
+        include: {
+          category: true,
+          subCategory: true,
+          images: {
+            where: { isPrimary: true },
+            take: 1
+          }
+        }
+      }),
+      prisma.product.count({ where })
+    ]);
 
     return successResponse(res, {
-      products: paginatedProducts,
+      products,
       pagination: {
         currentPage: pageNum,
-        totalPages: Math.ceil(filteredProducts.length / limitNum),
-        totalProducts: filteredProducts.length,
-        hasMore: endIndex < filteredProducts.length
+        totalPages: Math.ceil(totalCount / limitNum),
+        totalProducts: totalCount,
+        hasMore: skip + limitNum < totalCount
       }
     });
 
@@ -102,16 +117,25 @@ const getAllProducts = (req, res) => {
  * Get product by ID
  * GET /api/products/:id
  */
-const getProductById = (req, res) => {
+const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
-    const product = products.find(p => p.id === id);
+
+    const product = await prisma.product.findUnique({
+      where: { id },
+      include: {
+        category: true,
+        subCategory: true,
+        images: true
+      }
+    });
 
     if (!product) {
       return errorResponse(res, 'Product not found', 404, 'PRODUCT_NOT_FOUND');
     }
 
     return successResponse(res, { product });
+
   } catch (error) {
     console.error('Get product error:', error);
     return errorResponse(res, 'Failed to get product', 500);
@@ -122,29 +146,58 @@ const getProductById = (req, res) => {
  * Create new product (Admin only)
  * POST /api/products
  */
-const createProduct = (req, res) => {
+const createProduct = async (req, res) => {
   try {
-    const requiredFields = ['name', 'description', 'price', 'category', 'subCategory', 'stock'];
+    const requiredFields = ['name', 'description', 'price', 'categoryId', 'stock'];
     const missing = validateRequiredFields(req.body, requiredFields);
 
     if (missing) {
       return errorResponse(res, `Missing required fields: ${missing.join(', ')}`, 400, 'MISSING_FIELDS');
     }
 
-    const newProduct = {
-      id: `prod-${Date.now()}`,
-      ...req.body,
-      rating: req.body.rating || 0,
-      reviewCount: 0,
-      isBestSeller: false,
-      isNewArrival: true,
-      images: req.body.images || [],
-      tags: req.body.tags || []
-    };
+    // Verify category exists
+    const category = await prisma.category.findUnique({
+      where: { id: req.body.categoryId }
+    });
 
-    products.push(newProduct);
+    if (!category) {
+      return errorResponse(res, 'Category not found', 404, 'CATEGORY_NOT_FOUND');
+    }
+
+    // Verify subCategory if provided
+    if (req.body.subCategoryId) {
+      const subCategory = await prisma.subCategory.findUnique({
+        where: { id: req.body.subCategoryId }
+      });
+
+      if (!subCategory) {
+        return errorResponse(res, 'SubCategory not found', 404, 'SUBCATEGORY_NOT_FOUND');
+      }
+    }
+
+    const newProduct = await prisma.product.create({
+      data: {
+        name: req.body.name,
+        description: req.body.description,
+        price: req.body.price,
+        originalPrice: req.body.originalPrice || req.body.price,
+        categoryId: req.body.categoryId,
+        subCategoryId: req.body.subCategoryId,
+        stock: req.body.stock,
+        image: req.body.image,
+        tags: req.body.tags || [],
+        specs: req.body.specs || {},
+        isBestSeller: req.body.isBestSeller || false,
+        isNewArrival: req.body.isNewArrival !== false
+      },
+      include: {
+        category: true,
+        subCategory: true
+      }
+    });
 
     return successResponse(res, { product: newProduct }, 'Product created successfully', 201);
+
   } catch (error) {
     console.error('Create product error:', error);
     return errorResponse(res, 'Failed to create product', 500);
@@ -155,22 +208,66 @@ const createProduct = (req, res) => {
  * Update product (Admin only)
  * PUT /api/products/:id
  */
-const updateProduct = (req, res) => {
+const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const productIndex = products.findIndex(p => p.id === id);
 
-    if (productIndex === -1) {
+    // Verify product exists
+    const product = await prisma.product.findUnique({
+      where: { id }
+    });
+
+    if (!product) {
       return errorResponse(res, 'Product not found', 404, 'PRODUCT_NOT_FOUND');
     }
 
-    products[productIndex] = {
-      ...products[productIndex],
-      ...req.body,
-      id // Prevent ID change
-    };
+    // Verify category if being updated
+    if (req.body.categoryId) {
+      const category = await prisma.category.findUnique({
+        where: { id: req.body.categoryId }
+      });
 
-    return successResponse(res, { product: products[productIndex] }, 'Product updated successfully');
+      if (!category) {
+        return errorResponse(res, 'Category not found', 404, 'CATEGORY_NOT_FOUND');
+      }
+    }
+
+    // Verify subCategory if being updated
+    if (req.body.subCategoryId) {
+      const subCategory = await prisma.subCategory.findUnique({
+        where: { id: req.body.subCategoryId }
+      });
+
+      if (!subCategory) {
+        return errorResponse(res, 'SubCategory not found', 404, 'SUBCATEGORY_NOT_FOUND');
+      }
+    }
+
+    const updatedProduct = await prisma.product.update({
+      where: { id },
+      data: {
+        name: req.body.name,
+        description: req.body.description,
+        price: req.body.price,
+        originalPrice: req.body.originalPrice,
+        categoryId: req.body.categoryId,
+        subCategoryId: req.body.subCategoryId,
+        stock: req.body.stock,
+        image: req.body.image,
+        tags: req.body.tags,
+        specs: req.body.specs,
+        isBestSeller: req.body.isBestSeller,
+        isNewArrival: req.body.isNewArrival
+      },
+      include: {
+        category: true,
+        subCategory: true,
+        images: true
+      }
+    });
+
+    return successResponse(res, { product: updatedProduct }, 'Product updated successfully');
+
   } catch (error) {
     console.error('Update product error:', error);
     return errorResponse(res, 'Failed to update product', 500);
@@ -181,21 +278,86 @@ const updateProduct = (req, res) => {
  * Delete product (Admin only)
  * DELETE /api/products/:id
  */
-const deleteProduct = (req, res) => {
+const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const productIndex = products.findIndex(p => p.id === id);
 
-    if (productIndex === -1) {
+    // Verify product exists
+    const product = await prisma.product.findUnique({
+      where: { id },
+      include: {
+        _count: {
+          select: { OrderItem: true, Review: true }
+        }
+      }
+    });
+
+    if (!product) {
       return errorResponse(res, 'Product not found', 404, 'PRODUCT_NOT_FOUND');
     }
 
-    products.splice(productIndex, 1);
+    // Check if product has orders
+    if (product._count.OrderItem > 0) {
+      return errorResponse(res, 'Cannot delete product with existing orders', 400, 'PRODUCT_HAS_ORDERS');
+    }
+
+    // Delete related images and reviews first (cascade might not work for all)
+    await prisma.productImage.deleteMany({
+      where: { productId: id }
+    });
+
+    await prisma.review.deleteMany({
+      where: { productId: id }
+    });
+
+    // Delete the product
+    await prisma.product.delete({
+      where: { id }
+    });
 
     return successResponse(res, null, 'Product deleted successfully');
+
   } catch (error) {
     console.error('Delete product error:', error);
     return errorResponse(res, 'Failed to delete product', 500);
+  }
+};
+
+/**
+ * Search products
+ * GET /api/products/search
+ */
+const searchProducts = async (req, res) => {
+  try {
+    const { q, limit = 10 } = req.query;
+
+    if (!q || q.trim().length < 2) {
+      return errorResponse(res, 'Search query must be at least 2 characters', 400, 'INVALID_SEARCH');
+    }
+
+    const results = await prisma.product.findMany({
+      where: {
+        OR: [
+          { name: { contains: q, mode: 'insensitive' } },
+          { description: { contains: q, mode: 'insensitive' } },
+          { tags: { hasSome: [q] } }
+        ]
+      },
+      take: Math.min(Number(limit), 50),
+      select: {
+        id: true,
+        name: true,
+        price: true,
+        image: true,
+        rating: true
+      }
+    });
+
+    return successResponse(res, { results });
+
+  } catch (error) {
+    console.error('Search products error:', error);
+    return errorResponse(res, 'Failed to search products', 500);
   }
 };
 
@@ -204,5 +366,6 @@ module.exports = {
   getProductById,
   createProduct,
   updateProduct,
-  deleteProduct
+  deleteProduct,
+  searchProducts
 };

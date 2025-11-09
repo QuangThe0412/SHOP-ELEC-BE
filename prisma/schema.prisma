@@ -199,3 +199,17 @@ model Review {
   @@map("reviews")
 }
 
+// Banner Model
+model Banner {
+  id          String   @id @default(uuid())
+  title       String
+  description String?  @db.NVarChar(Max)
+  image       String   // URL or path to banner image
+  url         String?  // Link when banner is clicked
+  status      String   @default("active") // active | inactive
+  priority    Int      @default(0) // For ordering banners
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("banners")
+}

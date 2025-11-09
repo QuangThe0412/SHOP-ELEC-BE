@@ -1,5 +1,5 @@
 const bcrypt = require('bcryptjs');
-const { users } = require('../data/mockData');
+const prisma = require('../lib/prisma');
 const { generateAccessToken, generateRefreshToken, verifyToken } = require('../utils/jwt');
 const { successResponse, errorResponse } = require('../utils/response');
 const { isValidEmail, isValidPassword, validateRequiredFields } = require('../utils/validation');
@@ -32,23 +32,24 @@ const register = async (req, res) => {
     }
 
     // Check if user exists
-    const existingUser = users.find(u => u.email === email);
+    const existingUser = await prisma.user.findUnique({
+      where: { email }
+    });
+
     if (existingUser) {
       return errorResponse(res, 'Email already registered', 409, 'EMAIL_EXISTS');
     }
 
     // Create new user
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = {
-      id: `user-${Date.now()}`,
-      email,
-      password: hashedPassword,
-      name,
-      role: 'customer',
-      createdAt: new Date().toISOString()
-    };
-
-    users.push(newUser);
+    const newUser = await prisma.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+        name,
+        role: 'user'
+      }
+    });
 
     // Generate tokens
     const accessToken = generateAccessToken(newUser.id, newUser.role);
@@ -87,7 +88,10 @@ const login = async (req, res) => {
     }
 
     // Find user
-    const user = users.find(u => u.email === email);
+    const user = await prisma.user.findUnique({
+      where: { email }
+    });
+
     if (!user) {
       return errorResponse(res, 'Invalid credentials', 401, 'INVALID_CREDENTIALS');
     }
@@ -121,46 +125,31 @@ const login = async (req, res) => {
 };
 
 /**
- * Get current user
- * GET /api/auth/me
- */
-const getCurrentUser = (req, res) => {
-  try {
-    return successResponse(res, {
-      user: req.user
-    }, 'User retrieved successfully');
-  } catch (error) {
-    console.error('Get current user error:', error);
-    return errorResponse(res, 'Failed to get user', 500);
-  }
-};
-
-/**
  * Refresh access token
- * POST /api/auth/refresh-token
+ * POST /api/auth/refresh
  */
-const refreshAccessToken = (req, res) => {
+const refreshToken = async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    const { refreshToken: token } = req.body;
 
-    if (!refreshToken) {
-      return errorResponse(res, 'Refresh token required', 400, 'MISSING_TOKEN');
+    if (!token) {
+      return errorResponse(res, 'Refresh token is required', 400, 'MISSING_TOKEN');
     }
 
-    // Check if refresh token exists
-    if (!refreshTokens.has(refreshToken)) {
+    if (!refreshTokens.has(token)) {
       return errorResponse(res, 'Invalid refresh token', 401, 'INVALID_TOKEN');
     }
 
-    // Verify refresh token
-    const decoded = verifyToken(refreshToken, true);
+    const decoded = verifyToken(token, 'refresh');
     if (!decoded) {
-      refreshTokens.delete(refreshToken);
-      return errorResponse(res, 'Invalid or expired refresh token', 401, 'INVALID_TOKEN');
+      return errorResponse(res, 'Invalid or expired token', 401, 'EXPIRED_TOKEN');
     }
 
-    // Find user
-    const user = users.find(u => u.id === decoded.userId);
+    // Verify user still exists
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.id }
+    });
+
     if (!user) {
       return errorResponse(res, 'User not found', 404, 'USER_NOT_FOUND');
     }
@@ -184,12 +173,10 @@ const refreshAccessToken = (req, res) => {
  */
 const logout = (req, res) => {
   try {
-    const { refreshToken } = req.body;
-
-    if (refreshToken) {
-      refreshTokens.delete(refreshToken);
+    const { refreshToken: token } = req.body;
+    if (token) {
+      refreshTokens.delete(token);
     }
-
     return successResponse(res, null, 'Logout successful');
   } catch (error) {
     console.error('Logout error:', error);
@@ -197,10 +184,41 @@ const logout = (req, res) => {
   }
 };
 
+/**
+ * Get current user profile
+ * GET /api/auth/me
+ */
+const getProfile = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        createdAt: true
+      }
+    });
+
+    if (!user) {
+      return errorResponse(res, 'User not found', 404, 'USER_NOT_FOUND');
+    }
+
+    return successResponse(res, { user });
+
+  } catch (error) {
+    console.error('Get profile error:', error);
+    return errorResponse(res, 'Failed to get profile', 500);
+  }
+};
+
 module.exports = {
   register,
   login,
-  getCurrentUser,
-  refreshAccessToken,
-  logout
+  refreshToken,
+  logout,
+  getProfile
 };

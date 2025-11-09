@@ -400,6 +400,44 @@ async function main() {
 
   console.log('✅ Created orders');
 
+  // Create banners
+  await prisma.banner.deleteMany();
+  
+  const banner1 = await prisma.banner.create({
+    data: {
+      title: 'Summer Sale 2024',
+      description: 'Get up to 50% off on all electronics',
+      image: 'https://via.placeholder.com/1200x400?text=Summer+Sale',
+      url: '/products?sort=price-asc',
+      status: 'active',
+      priority: 1
+    }
+  });
+
+  const banner2 = await prisma.banner.create({
+    data: {
+      title: 'New Arrivals',
+      description: 'Check out our latest smartphone collection',
+      image: 'https://via.placeholder.com/1200x400?text=New+Arrivals',
+      url: '/products?sort=newest',
+      status: 'active',
+      priority: 2
+    }
+  });
+
+  const banner3 = await prisma.banner.create({
+    data: {
+      title: 'Exclusive Deals',
+      description: 'Premium laptops at special prices',
+      image: 'https://via.placeholder.com/1200x400?text=Exclusive+Deals',
+      url: '/products?category=laptop',
+      status: 'active',
+      priority: 3
+    }
+  });
+
+  console.log('✅ Created banners');
+
   console.log('\n🎉 Seed completed successfully!');
   console.log(`\n📊 Summary:`);
   console.log(`   - Users: 3 (1 admin, 2 users)`);
@@ -410,6 +448,7 @@ async function main() {
   console.log(`   - Reviews: 3`);
   console.log(`   - Cart Items: 3`);
   console.log(`   - Orders: 2`);
+  console.log(`   - Banners: 3`);
   console.log(`\n🔑 Login credentials:`);
   console.log(`   Admin: admin@elecshop.com / admin123`);
   console.log(`   User1: user1@example.com / user123`);
